@@ -3,6 +3,10 @@ app:
   port: 8000
   log_level: INFO
   request_timeout_sec: 120
+  enable_docs: true
+  docs_url: /docs
+  redoc_url: /redoc
+  openapi_url: /openapi.json
 
 proxy:
   mode: cloudflare_worker
@@ -30,3 +34,12 @@ cloudflare:
   access_client_id: ""
   access_client_secret: ""
   pass_trace_headers: true
+
+admin:
+  enabled: true
+  require_auth: false
+  token: ""
+  header_name: x-admin-token
+  models_cache_ttl_sec: 300
+  max_recent_requests: 2000
+  max_incidents: 500

@@ -40,6 +40,28 @@ cp config/config.example.yml config/config.yml
 uvicorn api.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+## One-command Start (Server + Swagger)
+
+Use the launcher script (loads `.env` and starts FastAPI):
+
+```bash
+./scripts/start.sh
+```
+
+Use a custom env file:
+
+```bash
+ENV_FILE=/path/to/.env ./scripts/start.sh
+```
+
+If docs are enabled, Swagger/ReDoc/OpenAPI URLs are printed at startup.
+
+Swagger defaults:
+
+- `Try it out` is enabled automatically.
+- Request examples/defaults are prefilled for proxy endpoints.
+- `POST /proxy/gemini/default` is available for immediate one-click real call testing.
+
 Health check:
 
 ```bash
@@ -83,6 +105,12 @@ curl -X POST http://127.0.0.1:8000/proxy/gemini \
   }'
 ```
 
+### 1.1) One-click default test endpoint
+
+`POST /proxy/gemini/default`
+
+Designed for Swagger UI: you can run it directly with `Execute` using default values.
+
 ### 2) Gemini-compatible route
 
 `POST /{api_version}/models/{model}:{method}`
@@ -102,6 +130,43 @@ curl -X POST http://127.0.0.1:8000/v1beta/models/gemini-2.5-flash:generateConten
   }'
 ```
 
+## Admin / Observability Endpoints
+
+All admin endpoints are under `/admin`.
+
+Mode behavior:
+
+- If `PROXY_MODE=cloudflare_worker`, Gemini-facing admin operations (models listing, key/health checks, connectivity checks) are routed through the Worker path.
+- If `PROXY_MODE=gemini_direct`, they call Gemini directly using `GEMINI_API_KEYS`.
+
+1. `GET /health`
+2. `GET /admin/system/config-effective`
+3. `GET /admin/gemini/models`
+4. `GET /admin/gemini/models/summary`
+5. `POST /admin/gemini/models/refresh`
+6. `GET /admin/keys/status`
+7. `POST /admin/keys/check`
+8. `GET /admin/keys/rotation-state`
+9. `GET /admin/usage/recent?since_minutes=60`
+10. `GET /admin/limits/info`
+11. `GET /admin/worker/connectivity`
+12. `GET /admin/incidents?limit=100`
+
+### Admin auth (optional)
+
+By default, admin auth is disabled. To enforce auth:
+
+```env
+ADMIN_ENABLED=true
+ADMIN_REQUIRE_AUTH=true
+ADMIN_TOKEN=your-strong-token
+ADMIN_HEADER_NAME=x-admin-token
+```
+
+Then pass the token in the configured header.
+
+Swagger UI also supports testing admin endpoints by sending this header value.
+
 ## Configuration Model
 
 Settings are loaded in this order:
@@ -116,6 +181,11 @@ Final precedence:
 
 ### Important variables
 
+- `APP_ENABLE_DOCS=true|false`
+- `APP_DOCS_URL=/docs`
+- `APP_REDOC_URL=/redoc`
+- `APP_OPENAPI_URL=/openapi.json`
+- `APP_RELOAD=true|false`
 - `PROXY_MODE=cloudflare_worker|gemini_direct`
 - `PROXY_TRUST_ENV_PROXY=true|false`
 - `PROXY_RETRY_ON_429=true|false`
@@ -127,6 +197,13 @@ Final precedence:
 - `CLOUDFLARE_AUTH_TOKEN=<string>`
 - `CLOUDFLARE_ACCESS_CLIENT_ID=<string>` (optional)
 - `CLOUDFLARE_ACCESS_CLIENT_SECRET=<string>` (optional)
+- `ADMIN_ENABLED=true|false`
+- `ADMIN_REQUIRE_AUTH=true|false`
+- `ADMIN_TOKEN=<string>`
+- `ADMIN_HEADER_NAME=<string>`
+- `ADMIN_MODELS_CACHE_TTL_SEC=<float>`
+- `ADMIN_MAX_RECENT_REQUESTS=<int>`
+- `ADMIN_MAX_INCIDENTS=<int>`
 
 ## Failover Behavior
 
@@ -197,3 +274,18 @@ GEMINI_API_KEYS=key1,key2,key3
 ```
 
 FastAPI will call Gemini directly and apply local round-robin key failover.
+
+## Test Suite
+
+Run the full Python test suite:
+
+```bash
+python -m pytest -q
+```
+
+Run Worker type-check:
+
+```bash
+cd worker
+npx tsc --noEmit
+```
