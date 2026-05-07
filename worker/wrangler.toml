@@ -1,0 +1,15 @@
+name = "gemini-proxy-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-07"
+
+[vars]
+WORKER_ROUTE_PREFIX = "/gemini"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+RETRY_ON_429 = "true"
+MAX_RETRIES_PER_KEY = "2"
+COOLOFF_MS = "0"
+WORKER_AUTH_HEADER_NAME = "x-worker-auth"
+
+# Set these as secrets (recommended):
+# wrangler secret put GEMINI_API_KEYS
+# wrangler secret put WORKER_AUTH_TOKEN

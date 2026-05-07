@@ -1,0 +1,32 @@
+app:
+  host: 0.0.0.0
+  port: 8000
+  log_level: INFO
+  request_timeout_sec: 120
+
+proxy:
+  mode: cloudflare_worker
+  trust_env_proxy: true
+  retry_on_429: true
+  max_retries_per_key: 2
+  cooloff_sec: 30
+  min_interval_sec: 0
+
+gemini:
+  base_url: https://generativelanguage.googleapis.com
+  api_version: v1beta
+  default_model: gemini-2.5-flash
+  api_keys: []
+  default_request:
+    generationConfig:
+      temperature: 0.3
+
+cloudflare:
+  worker_base_urls:
+    - https://your-worker-subdomain.workers.dev
+  worker_route_prefix: /gemini
+  auth_token: ""
+  auth_header_name: x-worker-auth
+  access_client_id: ""
+  access_client_secret: ""
+  pass_trace_headers: true
