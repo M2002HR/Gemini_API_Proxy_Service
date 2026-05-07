@@ -16,6 +16,10 @@ class AppSection(BaseModel):
     port: int = 8000
     log_level: str = "INFO"
     request_timeout_sec: float = 120.0
+    enable_docs: bool = True
+    docs_url: str = "/docs"
+    redoc_url: str = "/redoc"
+    openapi_url: str = "/openapi.json"
 
 
 class ProxySection(BaseModel):
@@ -45,11 +49,22 @@ class CloudflareSection(BaseModel):
     pass_trace_headers: bool = True
 
 
+class AdminSection(BaseModel):
+    enabled: bool = True
+    require_auth: bool = False
+    token: str = ""
+    header_name: str = "x-admin-token"
+    models_cache_ttl_sec: float = 300.0
+    max_recent_requests: int = 2000
+    max_incidents: int = 500
+
+
 class Settings(BaseModel):
     app: AppSection = Field(default_factory=AppSection)
     proxy: ProxySection = Field(default_factory=ProxySection)
     gemini: GeminiSection = Field(default_factory=GeminiSection)
     cloudflare: CloudflareSection = Field(default_factory=CloudflareSection)
+    admin: AdminSection = Field(default_factory=AdminSection)
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -96,6 +111,10 @@ def _apply_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         "APP_PORT": ("app.port", int),
         "APP_LOG_LEVEL": ("app.log_level", str),
         "APP_REQUEST_TIMEOUT_SEC": ("app.request_timeout_sec", float),
+        "APP_ENABLE_DOCS": ("app.enable_docs", _parse_bool),
+        "APP_DOCS_URL": ("app.docs_url", str),
+        "APP_REDOC_URL": ("app.redoc_url", str),
+        "APP_OPENAPI_URL": ("app.openapi_url", str),
         "PROXY_MODE": ("proxy.mode", str),
         "PROXY_TRUST_ENV_PROXY": ("proxy.trust_env_proxy", _parse_bool),
         "PROXY_RETRY_ON_429": ("proxy.retry_on_429", _parse_bool),
@@ -113,6 +132,13 @@ def _apply_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         "CLOUDFLARE_ACCESS_CLIENT_ID": ("cloudflare.access_client_id", str),
         "CLOUDFLARE_ACCESS_CLIENT_SECRET": ("cloudflare.access_client_secret", str),
         "CLOUDFLARE_PASS_TRACE_HEADERS": ("cloudflare.pass_trace_headers", _parse_bool),
+        "ADMIN_ENABLED": ("admin.enabled", _parse_bool),
+        "ADMIN_REQUIRE_AUTH": ("admin.require_auth", _parse_bool),
+        "ADMIN_TOKEN": ("admin.token", str),
+        "ADMIN_HEADER_NAME": ("admin.header_name", str),
+        "ADMIN_MODELS_CACHE_TTL_SEC": ("admin.models_cache_ttl_sec", float),
+        "ADMIN_MAX_RECENT_REQUESTS": ("admin.max_recent_requests", int),
+        "ADMIN_MAX_INCIDENTS": ("admin.max_incidents", int),
     }
 
     merged = dict(config_dict)

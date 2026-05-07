@@ -50,7 +50,7 @@ async function sleep(ms: number): Promise<void> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method !== "POST") {
+    if (request.method !== "POST" && request.method !== "GET") {
       return new Response("Method Not Allowed", { status: 405 });
     }
 
@@ -75,13 +75,22 @@ export default {
 
     const suffix = url.pathname.slice(prefix.length + 1);
     const parts = suffix.split("/");
-    if (parts.length !== 3 || parts[1] !== "models") {
-      return new Response("Path must be /<prefix>/<apiVersion>/models/<model>:<method>", { status: 400 });
+    if (!(parts.length === 2 && parts[1] === "models") && !(parts.length === 3 && parts[1] === "models")) {
+      return new Response("Path must be /<prefix>/<apiVersion>/models or /<prefix>/<apiVersion>/models/<model>:<method>", { status: 400 });
     }
 
     const apiVersion = parts[0];
-    const modelAndMethod = parts[2];
-    const payload = await request.text();
+    const isModelsList = parts.length === 2;
+    const modelAndMethod = isModelsList ? "" : parts[2];
+    const payload = request.method === "POST" ? await request.text() : "";
+
+    if (isModelsList && request.method !== "GET") {
+      return new Response("Method Not Allowed for models list. Use GET.", { status: 405 });
+    }
+
+    if (!isModelsList && request.method !== "POST") {
+      return new Response("Method Not Allowed for model method call. Use POST.", { status: 405 });
+    }
 
     const retryOn429 = toBool(env.RETRY_ON_429, true);
     const roundsLimit = Math.max(1, parseInt(env.MAX_RETRIES_PER_KEY || "2", 10));
@@ -92,7 +101,9 @@ export default {
 
     while (true) {
       const key = keys[inMemoryKeyIndex % keys.length];
-      const target = buildGeminiUrl(env, apiVersion, modelAndMethod, url.search);
+      const target = isModelsList
+        ? `${(env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com").replace(/\/$/, "")}/${apiVersion}/models${url.search}`
+        : buildGeminiUrl(env, apiVersion, modelAndMethod, url.search);
 
       const headers = new Headers(request.headers);
       headers.set("x-goog-api-key", key);
@@ -100,9 +111,9 @@ export default {
       headers.delete(authHeaderName(env));
 
       const upstreamResp = await fetch(target, {
-        method: "POST",
+        method: request.method,
         headers,
-        body: payload,
+        body: request.method === "POST" ? payload : undefined,
       });
 
       if (!retryOn429) {
