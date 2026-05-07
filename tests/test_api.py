@@ -5,7 +5,14 @@ from typing import Any, Dict
 class DummyResp:
     def __init__(self, status_code: int = 200, payload: Dict[str, Any] | None = None):
         self.status_code = status_code
-        self.headers = {"content-type": "application/json"}
+        self.headers = {
+            "content-type": "application/json",
+            "x-proxy-served-via": "gemini_direct",
+            "x-proxy-key-slot": "2",
+            "x-proxy-key-pool-size": "10",
+            "x-proxy-attempts": "1",
+            "x-proxy-key-rotated": "false",
+        }
         self._json = payload if payload is not None else {"ok": True}
         self.content = b'{"ok": true}'
 
@@ -98,6 +105,8 @@ def test_proxy_endpoint_monkeypatch(client_factory) -> None:
         )
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+        assert resp.json()["proxy_metadata"]["served_via"] == "gemini_direct"
+        assert resp.json()["proxy_metadata"]["key_slot"] == 2
 
 
 def test_gemini_compatible_route_monkeypatch(client_factory) -> None:
@@ -109,6 +118,7 @@ def test_gemini_compatible_route_monkeypatch(client_factory) -> None:
         )
         assert resp.status_code == 200
         assert resp.json()["via"] == "fake_proxy"
+        assert resp.json()["proxy_metadata"]["key_pool_size"] == 10
 
 
 def test_proxy_default_endpoint_monkeypatch(client_factory) -> None:
@@ -117,6 +127,7 @@ def test_proxy_default_endpoint_monkeypatch(client_factory) -> None:
         resp = client.post("/proxy/gemini/default")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+        assert resp.json()["proxy_metadata"]["attempts"] == 1
 
 
 def test_all_admin_endpoints_happy_path(client_factory) -> None:

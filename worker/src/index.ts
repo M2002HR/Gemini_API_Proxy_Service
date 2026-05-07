@@ -48,6 +48,27 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withProxyMetadataHeaders(
+  upstreamResp: Response,
+  {
+    keySlot,
+    keyPoolSize,
+    attempts,
+  }: {
+    keySlot: number;
+    keyPoolSize: number;
+    attempts: number;
+  },
+): Response {
+  const out = new Response(upstreamResp.body, upstreamResp);
+  out.headers.set("x-proxy-served-via", "cloudflare_worker");
+  out.headers.set("x-proxy-key-slot", String(keySlot));
+  out.headers.set("x-proxy-key-pool-size", String(keyPoolSize));
+  out.headers.set("x-proxy-attempts", String(Math.max(1, attempts)));
+  out.headers.set("x-proxy-key-rotated", attempts > 1 ? "true" : "false");
+  return out;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "POST" && request.method !== "GET") {
@@ -98,8 +119,11 @@ export default {
 
     let roundsDone = 0;
     let triedInRound = 0;
+    let attempts = 0;
 
     while (true) {
+      attempts += 1;
+      const keySlot = (inMemoryKeyIndex % keys.length) + 1;
       const key = keys[inMemoryKeyIndex % keys.length];
       const target = isModelsList
         ? `${(env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com").replace(/\/$/, "")}/${apiVersion}/models${url.search}`
@@ -117,12 +141,20 @@ export default {
       });
 
       if (!retryOn429) {
-        return upstreamResp;
+        return withProxyMetadataHeaders(upstreamResp, {
+          keySlot,
+          keyPoolSize: keys.length,
+          attempts,
+        });
       }
 
       const bodyText = await upstreamResp.clone().text();
       if (!is429OrExhausted(upstreamResp.status, bodyText)) {
-        return upstreamResp;
+        return withProxyMetadataHeaders(upstreamResp, {
+          keySlot,
+          keyPoolSize: keys.length,
+          attempts,
+        });
       }
 
       triedInRound += 1;

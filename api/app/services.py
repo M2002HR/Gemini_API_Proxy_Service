@@ -207,6 +207,38 @@ class GeminiProxyService:
             "total_tokens": int(usage_metadata.get("totalTokenCount") or 0),
         }
 
+    @staticmethod
+    def _parse_positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(str(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _set_proxy_metadata_headers(
+        self,
+        response: httpx.Response,
+        *,
+        worker_slot: Optional[int],
+        worker_url: Optional[str],
+        key_slot: Optional[int],
+        key_pool_size: Optional[int],
+        attempts: int,
+        key_rotated: bool,
+    ) -> None:
+        response.headers["x-proxy-served-via"] = self.settings.proxy.mode
+        response.headers["x-proxy-attempts"] = str(max(1, attempts))
+        response.headers["x-proxy-key-rotated"] = "true" if key_rotated else "false"
+
+        if worker_slot is not None:
+            response.headers["x-proxy-worker-slot"] = str(worker_slot)
+        if worker_url:
+            response.headers["x-proxy-worker-url"] = worker_url
+        if key_slot is not None:
+            response.headers["x-proxy-key-slot"] = str(key_slot)
+        if key_pool_size is not None:
+            response.headers["x-proxy-key-pool-size"] = str(key_pool_size)
+
     async def proxy_call(
         self,
         body: Dict[str, Any],
@@ -232,8 +264,10 @@ class GeminiProxyService:
 
         rounds_done = 0
         tried_in_round = 0
+        attempts = 0
 
         while True:
+            attempts += 1
             await self.limiter.wait()
 
             active_worker_slot: Optional[int] = None
@@ -292,6 +326,30 @@ class GeminiProxyService:
                     usage_metadata = response.json().get("usageMetadata", {}) or {}
                 except Exception:
                     usage_metadata = {}
+
+            key_pool_size: Optional[int] = None
+            key_rotated = attempts > 1
+            if self.settings.proxy.mode == "cloudflare_worker":
+                worker_key_slot = self._parse_positive_int(response.headers.get("x-proxy-key-slot"))
+                if worker_key_slot is not None:
+                    active_key_slot = worker_key_slot
+                    active_key_mask = f"worker-key-slot-{worker_key_slot}"
+                key_pool_size = self._parse_positive_int(response.headers.get("x-proxy-key-pool-size"))
+                if key_pool_size is None and self.settings.gemini.api_keys:
+                    key_pool_size = len(self.settings.gemini.api_keys)
+                key_rotated = str(response.headers.get("x-proxy-key-rotated", "")).strip().lower() == "true" or key_rotated
+            else:
+                key_pool_size = len(self.gemini_key_rr.values) if self.gemini_key_rr else None
+
+            self._set_proxy_metadata_headers(
+                response,
+                worker_slot=active_worker_slot,
+                worker_url=active_worker_url,
+                key_slot=active_key_slot,
+                key_pool_size=key_pool_size,
+                attempts=self._parse_positive_int(response.headers.get("x-proxy-attempts")) or attempts,
+                key_rotated=key_rotated,
+            )
 
             self._record_request(
                 mode=self.settings.proxy.mode,

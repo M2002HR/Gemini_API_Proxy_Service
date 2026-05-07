@@ -321,3 +321,71 @@ def test_proxy_call_records_connect_error_incident() -> None:
     assert len(svc.incidents) >= 1
 
     _run(svc.aclose())
+
+
+def test_proxy_call_sets_metadata_headers_in_direct_mode() -> None:
+    svc = GeminiProxyService(_settings("gemini_direct"))
+
+    async def _fake_post(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"candidates": []},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _fake_post  # type: ignore[method-assign]
+    resp = _run(
+        svc.proxy_call(
+            {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            path_model="gemini-2.5-flash",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.headers.get("x-proxy-served-via") == "gemini_direct"
+    assert resp.headers.get("x-proxy-key-slot") == "1"
+    assert resp.headers.get("x-proxy-key-pool-size") == "2"
+    assert resp.headers.get("x-proxy-attempts") == "1"
+    assert resp.headers.get("x-proxy-key-rotated") == "false"
+
+    _run(svc.aclose())
+
+
+def test_proxy_call_uses_worker_key_slot_header_for_runtime_tracking() -> None:
+    svc = GeminiProxyService(_settings("cloudflare_worker"))
+
+    async def _fake_post(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"candidates": []},
+            headers={
+                "content-type": "application/json",
+                "x-proxy-served-via": "cloudflare_worker",
+                "x-proxy-key-slot": "4",
+                "x-proxy-key-pool-size": "10",
+                "x-proxy-attempts": "3",
+                "x-proxy-key-rotated": "true",
+            },
+            request=httpx.Request("POST", "https://worker-a.example/gemini/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _fake_post  # type: ignore[method-assign]
+    resp = _run(
+        svc.proxy_call(
+            {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            path_model="gemini-2.5-flash",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.headers.get("x-proxy-key-slot") == "4"
+    assert resp.headers.get("x-proxy-key-pool-size") == "10"
+    assert resp.headers.get("x-proxy-attempts") == "3"
+    assert resp.headers.get("x-proxy-key-rotated") == "true"
+    assert svc.request_history[-1]["key_slot"] == 4
+    assert svc.request_history[-1]["key_mask"] == "worker-key-slot-4"
+
+    _run(svc.aclose())

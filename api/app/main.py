@@ -406,10 +406,31 @@ def _to_response(resp) -> Response:
         "content-type": resp.headers.get("content-type", "application/json"),
     }
 
+    def _parse_positive_int(raw: Any) -> int | None:
+        try:
+            parsed = int(str(raw))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    served_via = str(resp.headers.get("x-proxy-served-via", "")).strip() or "unknown"
+    proxy_metadata = {
+        "served_via": served_via,
+        "from_cloudflare_worker": served_via == "cloudflare_worker",
+        "key_slot": _parse_positive_int(resp.headers.get("x-proxy-key-slot")),
+        "key_pool_size": _parse_positive_int(resp.headers.get("x-proxy-key-pool-size")),
+        "worker_slot": _parse_positive_int(resp.headers.get("x-proxy-worker-slot")),
+        "worker_url": str(resp.headers.get("x-proxy-worker-url", "")).strip() or None,
+        "attempts": _parse_positive_int(resp.headers.get("x-proxy-attempts")),
+        "key_rotated": str(resp.headers.get("x-proxy-key-rotated", "")).strip().lower() == "true",
+    }
+
     content_type = headers["content-type"].lower()
     if "application/json" in content_type:
         try:
             data = resp.json()
+            if isinstance(data, dict):
+                data["proxy_metadata"] = proxy_metadata
             return JSONResponse(status_code=resp.status_code, content=data, headers=headers)
         except json.JSONDecodeError:
             pass
