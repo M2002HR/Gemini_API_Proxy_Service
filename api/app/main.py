@@ -293,7 +293,22 @@ async def proxy_gemini(
                     "model": "gemini-2.5-flash",
                     "contents": [{"role": "user", "parts": [{"text": "Say hello in Persian"}]}],
                 },
-            }
+            },
+            "image_inline_data": {
+                "summary": "Multimodal prompt (text + image)",
+                "value": {
+                    "model": "gemini-2.5-flash",
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"text": "Describe this image in Persian"},
+                                {"inlineData": {"mimeType": "image/jpeg", "data": "<BASE64_IMAGE_BYTES>"}},
+                            ],
+                        }
+                    ],
+                },
+            },
         },
     ),
     x_request_id: str | None = Header(default=None),
@@ -376,6 +391,20 @@ async def gemini_compatible_route(
                 "summary": "Gemini-compatible payload",
                 "value": {
                     "contents": [{"role": "user", "parts": [{"text": "Say hello"}]}],
+                },
+            },
+            "compatible_image_inline_data": {
+                "summary": "Gemini-compatible multimodal payload",
+                "value": {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"text": "What do you see in this image?"},
+                                {"inlineData": {"mimeType": "image/png", "data": "<BASE64_IMAGE_BYTES>"}},
+                            ],
+                        }
+                    ],
                 },
             }
         },

@@ -20,8 +20,22 @@ class ProxyGeminiRequest(BaseModel):
     method: Optional[str] = Field(default=None, description="Gemini method (default: generateContent)")
     contents: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Gemini contents payload for generate/stream calls",
-        examples=[[{"role": "user", "parts": [{"text": "Hello"}]}]],
+        description=(
+            "Gemini contents payload for generate/stream calls. Supports multimodal parts "
+            "such as text + image via `inlineData` or `fileData`."
+        ),
+        examples=[
+            [{"role": "user", "parts": [{"text": "Hello"}]}],
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "Describe this image"},
+                        {"inlineData": {"mimeType": "image/jpeg", "data": "<BASE64_IMAGE_BYTES>"}},
+                    ],
+                }
+            ],
+        ],
     )
 
 

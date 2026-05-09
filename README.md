@@ -10,6 +10,7 @@ This repository is fully configuration-driven so you can move it to any environm
 
 - Cloudflare Worker proxy in front of Gemini API
 - FastAPI gateway with Gemini-compatible endpoints
+- Multimodal passthrough (`text + image`) for Gemini `generateContent`
 - Round-robin failover on `429` / `RESOURCE_EXHAUSTED`
 - Configurable retry rounds and cooldown
 - Optional per-request rate spacing (`min_interval_sec`)
@@ -105,6 +106,28 @@ curl -X POST http://127.0.0.1:8000/proxy/gemini \
   }'
 ```
 
+Image understanding example (`inlineData`):
+
+```bash
+IMG_B64=$(base64 -w 0 /path/to/image.jpg)
+curl -X POST http://127.0.0.1:8000/proxy/gemini \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"gemini-2.5-flash\",
+    \"contents\": [
+      {
+        \"role\": \"user\",
+        \"parts\": [
+          {\"text\": \"این تصویر را دقیق توضیح بده\"},
+          {\"inlineData\": {\"mimeType\": \"image/jpeg\", \"data\": \"$IMG_B64\"}}
+        ]
+      }
+    ]
+  }"
+```
+
+Use a model that supports image input.
+
 ### 1.1) One-click default test endpoint
 
 `POST /proxy/gemini/default`
@@ -128,6 +151,25 @@ curl -X POST http://127.0.0.1:8000/v1beta/models/gemini-2.5-flash:generateConten
       }
     ]
   }'
+```
+
+Compatible multimodal example:
+
+```bash
+IMG_B64=$(base64 -w 0 /path/to/image.png)
+curl -X POST http://127.0.0.1:8000/v1beta/models/gemini-2.5-flash:generateContent \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"contents\": [
+      {
+        \"role\": \"user\",
+        \"parts\": [
+          {\"text\": \"What objects are visible?\"},
+          {\"inlineData\": {\"mimeType\": \"image/png\", \"data\": \"$IMG_B64\"}}
+        ]
+      }
+    ]
+  }"
 ```
 
 ## Admin / Observability Endpoints
@@ -280,7 +322,14 @@ FastAPI will call Gemini directly and apply local round-robin key failover.
 Run the full Python test suite:
 
 ```bash
-python -m pytest -q
+PYTHONPATH=. .venv/bin/pytest -q
+```
+
+Run only multimodal/image-related tests:
+
+```bash
+PYTHONPATH=. .venv/bin/pytest -q tests/test_api.py -k multimodal_payload
+PYTHONPATH=. .venv/bin/pytest -q tests/test_services.py -k inline_image_data
 ```
 
 Run Worker type-check:

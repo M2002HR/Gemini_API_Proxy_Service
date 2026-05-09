@@ -353,6 +353,47 @@ def test_proxy_call_sets_metadata_headers_in_direct_mode() -> None:
     _run(svc.aclose())
 
 
+def test_proxy_call_passes_inline_image_data_to_upstream() -> None:
+    svc = GeminiProxyService(_settings("gemini_direct"))
+
+    async def _fake_post(*args, **kwargs):
+        payload = kwargs.get("json") or {}
+        parts = payload["contents"][0]["parts"]
+        assert parts[0]["text"] == "Describe the image"
+        assert parts[1]["inlineData"]["mimeType"] == "image/jpeg"
+        assert parts[1]["inlineData"]["data"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _fake_post  # type: ignore[method-assign]
+    resp = _run(
+        svc.proxy_call(
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "Describe the image"},
+                            {"inlineData": {"mimeType": "image/jpeg", "data": "ZmFrZS1pbWFnZS1ieXRlcw=="}},
+                        ],
+                    }
+                ]
+            },
+            path_model="gemini-2.5-flash",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.status_code == 200
+
+    _run(svc.aclose())
+
+
 def test_proxy_call_uses_worker_key_slot_header_for_runtime_tracking() -> None:
     svc = GeminiProxyService(_settings("cloudflare_worker"))
 

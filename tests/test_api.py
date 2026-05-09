@@ -109,6 +109,36 @@ def test_proxy_endpoint_monkeypatch(client_factory) -> None:
         assert resp.json()["proxy_metadata"]["key_slot"] == 2
 
 
+def test_proxy_endpoint_forwards_multimodal_payload(client_factory) -> None:
+    captured: Dict[str, Any] = {}
+
+    async def _capturing_proxy_call(body, **kwargs):
+        captured["body"] = body
+        return DummyResp(200, {"ok": True, "via": "captured_proxy"})
+
+    with client_factory() as client:
+        client.app.state.services.gemini.proxy_call = _capturing_proxy_call
+        resp = client.post(
+            "/proxy/gemini",
+            json={
+                "model": "gemini-2.5-flash",
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "Describe this image"},
+                            {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAUA"}},
+                        ],
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["via"] == "captured_proxy"
+        assert captured["body"]["contents"][0]["parts"][1]["inlineData"]["mimeType"] == "image/png"
+        assert captured["body"]["contents"][0]["parts"][1]["inlineData"]["data"] == "iVBORw0KGgoAAAANSUhEUgAAAAUA"
+
+
 def test_gemini_compatible_route_monkeypatch(client_factory) -> None:
     with client_factory() as client:
         client.app.state.services.gemini.proxy_call = _fake_proxy_call
