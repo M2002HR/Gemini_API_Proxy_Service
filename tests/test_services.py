@@ -430,3 +430,70 @@ def test_proxy_call_uses_worker_key_slot_header_for_runtime_tracking() -> None:
     assert svc.request_history[-1]["key_mask"] == "worker-key-slot-4"
 
     _run(svc.aclose())
+
+
+def test_proxy_call_retries_on_5xx_and_succeeds() -> None:
+    svc = GeminiProxyService(_settings("gemini_direct"))
+    svc.settings.proxy.retry_on_5xx = True
+    svc.settings.proxy.max_retries_on_5xx = 3
+    svc.settings.proxy.retry_backoff_sec = 0
+
+    statuses = [500, 500, 200]
+
+    async def _fake_post(*args, **kwargs):
+        status = statuses.pop(0)
+        return httpx.Response(
+            status,
+            json={"candidates": []} if status == 200 else {"error": {"status": "INTERNAL"}},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _fake_post  # type: ignore[method-assign]
+    resp = _run(
+        svc.proxy_call(
+            {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            path_model="gemma-4-26b-a4b-it",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-proxy-attempts") == "3"
+    assert [r["status_code"] for r in svc.request_history][-3:] == [500, 500, 200]
+    assert any(i["kind"] == "retry_on_5xx" for i in svc.incidents)
+
+    _run(svc.aclose())
+
+
+def test_proxy_call_stops_after_max_5xx_retries() -> None:
+    svc = GeminiProxyService(_settings("gemini_direct"))
+    svc.settings.proxy.retry_on_5xx = True
+    svc.settings.proxy.max_retries_on_5xx = 2
+    svc.settings.proxy.retry_backoff_sec = 0
+
+    async def _fake_post(*args, **kwargs):
+        return httpx.Response(
+            500,
+            json={"error": {"status": "INTERNAL"}},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _fake_post  # type: ignore[method-assign]
+    resp = _run(
+        svc.proxy_call(
+            {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            path_model="gemma-4-26b-a4b-it",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.status_code == 500
+    assert resp.headers.get("x-proxy-attempts") == "3"
+    assert [r["status_code"] for r in svc.request_history][-3:] == [500, 500, 500]
+    assert sum(1 for i in svc.incidents if i["kind"] == "retry_on_5xx") >= 2
+
+    _run(svc.aclose())

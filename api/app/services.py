@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from collections import deque
@@ -11,6 +12,8 @@ import httpx
 from fastapi import HTTPException
 
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -124,18 +127,22 @@ class GeminiProxyService:
         return entry
 
     def _record_incident(self, kind: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
-        self.incidents.append(
-            {
-                "ts": self._now_iso(),
-                "kind": kind,
-                "message": message,
-                "context": context or {},
-            }
+        payload = {
+            "ts": self._now_iso(),
+            "kind": kind,
+            "message": message,
+            "context": context or {},
+        }
+        self.incidents.append(payload)
+        logger.warning(
+            "Gemini incident",
+            extra={"details": payload},
         )
 
     def _record_request(
         self,
         *,
+        request_id: str | None,
         mode: str,
         api_version: str,
         model: str,
@@ -152,6 +159,7 @@ class GeminiProxyService:
         self.request_history.append(
             {
                 "ts": self._now_iso(),
+                "request_id": request_id,
                 "mode": mode,
                 "api_version": api_version,
                 "model": model,
@@ -215,6 +223,13 @@ class GeminiProxyService:
             return None
         return parsed if parsed > 0 else None
 
+    @staticmethod
+    def _response_excerpt(response: httpx.Response, *, limit: int = 400) -> str:
+        raw = " ".join((response.text or "").split())
+        if len(raw) <= limit:
+            return raw
+        return raw[: limit - 3] + "..."
+
     def _set_proxy_metadata_headers(
         self,
         response: httpx.Response,
@@ -259,12 +274,33 @@ class GeminiProxyService:
             raise HTTPException(status_code=422, detail="`contents` is required in request payload")
 
         retry_on_429 = self.settings.proxy.retry_on_429
+        retry_on_5xx = bool(self.settings.proxy.retry_on_5xx)
         rounds_limit = max(1, int(self.settings.proxy.max_retries_per_key))
+        max_retries_on_5xx = max(0, int(self.settings.proxy.max_retries_on_5xx))
+        retry_backoff_sec = max(0.0, float(self.settings.proxy.retry_backoff_sec))
         cooloff_sec = max(0.0, float(self.settings.proxy.cooloff_sec))
 
         rounds_done = 0
         tried_in_round = 0
         attempts = 0
+        retries_5xx_done = 0
+        request_started_at = time.monotonic()
+        logger.info(
+            "Gemini proxy call started",
+            extra={
+                "details": {
+                    "request_id": request_id,
+                    "mode": self.settings.proxy.mode,
+                    "api_version": api_version,
+                    "model": model,
+                    "method": method,
+                    "retry_on_429": retry_on_429,
+                    "retry_on_5xx": retry_on_5xx,
+                    "max_retries_per_key": rounds_limit,
+                    "max_retries_on_5xx": max_retries_on_5xx,
+                }
+            },
+        )
 
         while True:
             attempts += 1
@@ -290,12 +326,29 @@ class GeminiProxyService:
 
             headers = self._build_headers(request_id)
             started = time.monotonic()
+            logger.info(
+                "Gemini proxy upstream attempt",
+                extra={
+                    "details": {
+                        "request_id": request_id,
+                        "attempt": attempts,
+                        "mode": self.settings.proxy.mode,
+                        "model": model,
+                        "method": method,
+                        "api_version": api_version,
+                        "worker_slot": active_worker_slot,
+                        "worker_url": active_worker_url,
+                        "key_slot": active_key_slot,
+                    }
+                },
+            )
 
             try:
                 response = await self.client.post(url, headers=headers, json=payload)
             except httpx.HTTPError as exc:
                 latency_ms = (time.monotonic() - started) * 1000.0
                 self._record_request(
+                    request_id=request_id,
                     mode=self.settings.proxy.mode,
                     api_version=api_version,
                     model=model,
@@ -312,7 +365,31 @@ class GeminiProxyService:
                 self._record_incident(
                     kind="upstream_connect_error",
                     message=str(exc),
-                    context={"mode": self.settings.proxy.mode, "model": model, "method": method},
+                    context={
+                        "request_id": request_id,
+                        "mode": self.settings.proxy.mode,
+                        "model": model,
+                        "method": method,
+                        "attempt": attempts,
+                        "worker_slot": active_worker_slot,
+                        "key_slot": active_key_slot,
+                    },
+                )
+                logger.exception(
+                    "Gemini proxy upstream connection error",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "attempt": attempts,
+                            "mode": self.settings.proxy.mode,
+                            "model": model,
+                            "method": method,
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                            "latency_ms": round(latency_ms, 2),
+                            "url": url,
+                        }
+                    },
                 )
                 raise HTTPException(
                     status_code=502,
@@ -352,6 +429,7 @@ class GeminiProxyService:
             )
 
             self._record_request(
+                request_id=request_id,
                 mode=self.settings.proxy.mode,
                 api_version=api_version,
                 model=model,
@@ -364,6 +442,23 @@ class GeminiProxyService:
                 key_mask=active_key_mask,
                 usage_metadata=usage_metadata,
                 error_message="",
+            )
+            logger.info(
+                "Gemini proxy upstream response",
+                extra={
+                    "details": {
+                        "request_id": request_id,
+                        "attempt": attempts,
+                        "mode": self.settings.proxy.mode,
+                        "model": model,
+                        "method": method,
+                        "status_code": response.status_code,
+                        "latency_ms": round(latency_ms, 2),
+                        "worker_slot": active_worker_slot,
+                        "key_slot": active_key_slot,
+                        "usage_tokens": self._usage_counts(usage_metadata),
+                    }
+                },
             )
 
             if self.settings.proxy.mode == "cloudflare_worker":
@@ -384,22 +479,121 @@ class GeminiProxyService:
                 self._record_incident(
                     kind="upstream_http_error",
                     message=message,
-                    context={"mode": self.settings.proxy.mode, "worker_slot": active_worker_slot, "key_slot": active_key_slot},
+                    context={
+                        "request_id": request_id,
+                        "mode": self.settings.proxy.mode,
+                        "worker_slot": active_worker_slot,
+                        "key_slot": active_key_slot,
+                        "attempt": attempts,
+                        "status_code": response.status_code,
+                    },
+                )
+                logger.warning(
+                    "Gemini proxy upstream returned error",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "attempt": attempts,
+                            "status_code": response.status_code,
+                            "mode": self.settings.proxy.mode,
+                            "model": model,
+                            "method": method,
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                            "body_excerpt": self._response_excerpt(response),
+                        }
+                    },
                 )
             else:
                 entry["success_count"] += 1
                 entry["last_error"] = ""
 
-            if not retry_on_429 or not self._is_429(response):
+            should_retry_429 = retry_on_429 and self._is_429(response)
+            should_retry_5xx = retry_on_5xx and response.status_code >= 500 and retries_5xx_done < max_retries_on_5xx
+
+            if not should_retry_429 and not should_retry_5xx:
+                logger.info(
+                    "Gemini proxy call finished",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "mode": self.settings.proxy.mode,
+                            "model": model,
+                            "method": method,
+                            "status_code": response.status_code,
+                            "attempts": attempts,
+                            "total_latency_ms": round((time.monotonic() - request_started_at) * 1000.0, 2),
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                        }
+                    },
+                )
                 return response
 
-            entry["last_429_at"] = self._now_iso()
-            message = f"429/resource_exhausted at {model}:{method}"
-            self._record_incident(
-                kind="rate_limited",
-                message=message,
-                context={"mode": self.settings.proxy.mode, "worker_slot": active_worker_slot, "key_slot": active_key_slot},
-            )
+            if should_retry_429:
+                entry["last_429_at"] = self._now_iso()
+                message = f"429/resource_exhausted at {model}:{method}"
+                self._record_incident(
+                    kind="rate_limited",
+                    message=message,
+                    context={
+                        "request_id": request_id,
+                        "mode": self.settings.proxy.mode,
+                        "worker_slot": active_worker_slot,
+                        "key_slot": active_key_slot,
+                        "attempt": attempts,
+                    },
+                )
+                logger.warning(
+                    "Gemini proxy retrying after 429/resource exhausted",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "attempt": attempts,
+                            "mode": self.settings.proxy.mode,
+                            "model": model,
+                            "method": method,
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                        }
+                    },
+                )
+            else:
+                retries_5xx_done += 1
+                message = (
+                    f"retry_on_5xx #{retries_5xx_done}/{max_retries_on_5xx} "
+                    f"status={response.status_code} model={model} method={method}"
+                )
+                self._record_incident(
+                    kind="retry_on_5xx",
+                    message=message,
+                    context={
+                        "request_id": request_id,
+                        "mode": self.settings.proxy.mode,
+                        "worker_slot": active_worker_slot,
+                        "key_slot": active_key_slot,
+                        "attempt": attempts,
+                        "status_code": response.status_code,
+                        "retry_number": retries_5xx_done,
+                    },
+                )
+                logger.warning(
+                    "Gemini proxy retrying after upstream 5xx",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "attempt": attempts,
+                            "retry_number": retries_5xx_done,
+                            "max_retries_on_5xx": max_retries_on_5xx,
+                            "status_code": response.status_code,
+                            "mode": self.settings.proxy.mode,
+                            "model": model,
+                            "method": method,
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                        }
+                    },
+                )
 
             pool_size = (
                 len(self.worker_rr.values)
@@ -417,9 +611,34 @@ class GeminiProxyService:
                 rounds_done += 1
                 tried_in_round = 0
                 if rounds_done >= rounds_limit:
+                    logger.warning(
+                        "Gemini proxy exhausted one full retry round",
+                        extra={
+                            "details": {
+                                "request_id": request_id,
+                                "rounds_done": rounds_done,
+                                "rounds_limit": rounds_limit,
+                                "pool_size": pool_size,
+                                "cooloff_sec": cooloff_sec,
+                            }
+                        },
+                    )
                     if cooloff_sec > 0:
                         await asyncio.sleep(cooloff_sec)
                     rounds_done = 0
+
+            if should_retry_5xx and retry_backoff_sec > 0:
+                logger.info(
+                    "Gemini proxy retry backoff sleep",
+                    extra={
+                        "details": {
+                            "request_id": request_id,
+                            "retry_backoff_sec": retry_backoff_sec,
+                            "attempt": attempts,
+                        }
+                    },
+                )
+                await asyncio.sleep(retry_backoff_sec)
 
     def _redact_model(self, model: Dict[str, Any]) -> Dict[str, Any]:
         return {

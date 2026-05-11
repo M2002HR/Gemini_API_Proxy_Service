@@ -5,7 +5,10 @@ export interface Env {
   WORKER_AUTH_TOKEN?: string;
   WORKER_AUTH_HEADER_NAME?: string;
   RETRY_ON_429?: string;
+  RETRY_ON_5XX?: string;
   MAX_RETRIES_PER_KEY?: string;
+  MAX_RETRIES_ON_5XX?: string;
+  RETRY_BACKOFF_MS?: string;
   COOLOFF_MS?: string;
 }
 
@@ -26,6 +29,10 @@ function getKeys(env: Env): string[] {
 function is429OrExhausted(status: number, bodyText: string): boolean {
   if (status === 429) return true;
   return bodyText.toUpperCase().includes("RESOURCE_EXHAUSTED");
+}
+
+function isRetryable5xx(status: number): boolean {
+  return status >= 500;
 }
 
 function normalizePrefix(prefix?: string): string {
@@ -114,12 +121,16 @@ export default {
     }
 
     const retryOn429 = toBool(env.RETRY_ON_429, true);
+    const retryOn5xx = toBool(env.RETRY_ON_5XX, true);
     const roundsLimit = Math.max(1, parseInt(env.MAX_RETRIES_PER_KEY || "2", 10));
+    const maxRetriesOn5xx = Math.max(0, parseInt(env.MAX_RETRIES_ON_5XX || "4", 10));
+    const retryBackoffMs = Math.max(0, parseInt(env.RETRY_BACKOFF_MS || "350", 10));
     const cooloffMs = Math.max(0, parseInt(env.COOLOFF_MS || "0", 10));
 
     let roundsDone = 0;
     let triedInRound = 0;
     let attempts = 0;
+    let retriesOn5xxDone = 0;
 
     while (true) {
       attempts += 1;
@@ -134,13 +145,18 @@ export default {
       headers.delete("host");
       headers.delete(authHeaderName(env));
 
-      const upstreamResp = await fetch(target, {
-        method: request.method,
-        headers,
-        body: request.method === "POST" ? payload : undefined,
-      });
+      let upstreamResp: Response;
+      try {
+        upstreamResp = await fetch(target, {
+          method: request.method,
+          headers,
+          body: request.method === "POST" ? payload : undefined,
+        });
+      } catch (err) {
+        upstreamResp = new Response(`Upstream fetch error: ${String(err)}`, { status: 502 });
+      }
 
-      if (!retryOn429) {
+      if (!retryOn429 && !retryOn5xx) {
         return withProxyMetadataHeaders(upstreamResp, {
           keySlot,
           keyPoolSize: keys.length,
@@ -149,12 +165,21 @@ export default {
       }
 
       const bodyText = await upstreamResp.clone().text();
-      if (!is429OrExhausted(upstreamResp.status, bodyText)) {
+      const shouldRetry429 = retryOn429 && is429OrExhausted(upstreamResp.status, bodyText);
+      const shouldRetry5xx = retryOn5xx && isRetryable5xx(upstreamResp.status) && retriesOn5xxDone < maxRetriesOn5xx;
+      if (!shouldRetry429 && !shouldRetry5xx) {
         return withProxyMetadataHeaders(upstreamResp, {
           keySlot,
           keyPoolSize: keys.length,
           attempts,
         });
+      }
+
+      if (shouldRetry5xx) {
+        retriesOn5xxDone += 1;
+        if (retryBackoffMs > 0) {
+          await sleep(retryBackoffMs);
+        }
       }
 
       triedInRound += 1;

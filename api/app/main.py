@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import sys
+import time
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal
@@ -27,6 +32,8 @@ from .schemas import (
 )
 from .services import ServiceContainer
 
+logger = logging.getLogger(__name__)
+
 _RUNTIME_SETTINGS = get_settings()
 _DOCS_ENABLED = bool(_RUNTIME_SETTINGS.app.enable_docs)
 _DOCS_URL = _RUNTIME_SETTINGS.app.docs_url if _DOCS_ENABLED else None
@@ -42,9 +49,42 @@ _ADMIN_API_KEY = APIKeyHeader(
 )
 
 
+class StructuredFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        details = getattr(record, "details", None)
+        if details is None:
+            return base
+        try:
+            encoded = json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            encoded = str(details)
+        return f"{base} details={encoded}"
+
+
+def _configure_logging(level_name: str) -> None:
+    level = getattr(logging, str(level_name).upper(), logging.INFO)
+    fmt = os.getenv("APP_LOG_FORMAT", "%(asctime)s %(levelname)s %(name)s %(message)s")
+    formatter = StructuredFormatter(fmt)
+
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(stream=sys.stdout)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            handler.setFormatter(formatter)
+    root.setLevel(level)
+
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).setLevel(level)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    _configure_logging(settings.app.log_level)
     services = ServiceContainer(settings=settings)
     app.state.services = services
     app.state.settings = settings
@@ -84,6 +124,56 @@ app = FastAPI(
     ],
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def request_trace_middleware(request: Request, call_next):
+    request_id = str(request.headers.get("x-request-id") or "").strip() or uuid4().hex
+    request.state.request_id = request_id
+    started = time.monotonic()
+    logger.info(
+        "HTTP request started",
+        extra={
+            "details": {
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "query": request.url.query,
+                "client_ip": request.client.host if request.client else None,
+            }
+        },
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "HTTP request crashed",
+            extra={
+                "details": {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "latency_ms": round((time.monotonic() - started) * 1000.0, 2),
+                }
+            },
+        )
+        raise
+
+    latency_ms = round((time.monotonic() - started) * 1000.0, 2)
+    response.headers["x-request-id"] = request_id
+    logger.info(
+        "HTTP request completed",
+        extra={
+            "details": {
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+            }
+        },
+    )
+    return response
 
 
 def _mask_secret(value: str) -> str:
@@ -324,10 +414,10 @@ async def proxy_gemini(
 
     response = await request.app.state.services.gemini.proxy_call(
         body,
-        request_id=x_request_id,
+        request_id=x_request_id or getattr(request.state, "request_id", None),
     )
 
-    return _to_response(response)
+    return _to_response(response, request_id=x_request_id or getattr(request.state, "request_id", None))
 
 
 @app.post(
@@ -363,9 +453,9 @@ async def proxy_gemini_default(
 
     response = await request.app.state.services.gemini.proxy_call(
         body,
-        request_id=x_request_id,
+        request_id=x_request_id or getattr(request.state, "request_id", None),
     )
-    return _to_response(response)
+    return _to_response(response, request_id=x_request_id or getattr(request.state, "request_id", None))
 
 
 @app.post(
@@ -424,16 +514,18 @@ async def gemini_compatible_route(
         path_model=model,
         path_api_version=api_version,
         path_method=method,
-        request_id=x_request_id,
+        request_id=x_request_id or getattr(request.state, "request_id", None),
     )
 
-    return _to_response(response)
+    return _to_response(response, request_id=x_request_id or getattr(request.state, "request_id", None))
 
 
-def _to_response(resp) -> Response:
+def _to_response(resp, *, request_id: str | None = None) -> Response:
     headers = {
         "content-type": resp.headers.get("content-type", "application/json"),
     }
+    if request_id:
+        headers["x-request-id"] = request_id
 
     def _parse_positive_int(raw: Any) -> int | None:
         try:

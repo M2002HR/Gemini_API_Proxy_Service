@@ -12,7 +12,10 @@ proxy:
   mode: cloudflare_worker
   trust_env_proxy: true
   retry_on_429: true
+  retry_on_5xx: true
   max_retries_per_key: 2
+  max_retries_on_5xx: 4
+  retry_backoff_sec: 0.35
   cooloff_sec: 30
   min_interval_sec: 0
 
