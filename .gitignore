@@ -9,3 +9,4 @@ __pycache__/
 config/config.yml
 node_modules/
 dist/
+reports/load-tests/

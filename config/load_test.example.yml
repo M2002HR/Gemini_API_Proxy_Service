@@ -1,0 +1,72 @@
+run:
+  name: gemini-proxy-benchmark
+  output_dir: reports/load-tests
+  seed: 42
+  show_progress_logs: true
+  progress_interval_seconds: 2
+
+target:
+  base_url: http://127.0.0.1:8000
+  endpoint: proxy_gemini
+  proxy_path: /proxy/gemini
+  proxy_default_path: /proxy/gemini/default
+  compatible_path_template: /{api_version}/models/{model}:{method}
+  request_method: POST
+  model: gemma-4-31b-it
+  api_version: v1beta
+  method: generateContent
+  verify_tls: true
+  default_headers:
+    content-type: application/json
+
+load_profile:
+  total_requests: 100
+  requests_per_second: 8
+  concurrency: 24
+  ramp_up_seconds: 12
+  request_timeout_seconds: 90
+  max_connections: 200
+  max_keepalive_connections: 50
+  http2: false
+  trust_env_proxy: true
+  disable_env_proxy_for_loopback: true
+
+payload:
+  role: user
+  prompt_templates:
+    - "یک پاسخ دقیق و فشرده درباره hardening سرویس‌های API بده."
+    - "سه راهکار عملی برای کاهش latency در gateway بنویس."
+    - "تفاوت retry برای 429 و 5xx را با مثال واقعی توضیح بده."
+  prompt_min_chars: 120
+  prompt_max_chars: 280
+  random_suffix_chars: 24
+  include_request_metadata_in_prompt: true
+  generation_config:
+    temperature: 0.2
+    topP: 0.9
+    maxOutputTokens: 128
+  extra_body: {}
+  send_payload_for_default_endpoint: true
+
+assertions:
+  success_status_codes: [200]
+
+admin:
+  enabled: true
+  require_auth: false
+  header_name: x-admin-token
+  token: ""
+  usage_window_minutes: 180
+  incidents_limit: 2000
+  run_keys_check_before: true
+  run_keys_check_after: true
+  run_worker_connectivity_before: true
+  run_worker_connectivity_after: true
+  poll_interval_seconds: 0
+
+report:
+  top_n_slowest: 20
+  top_n_errors: 50
+  include_success_samples: 10
+  max_error_body_chars: 500
+  top_n_failure_signatures: 12

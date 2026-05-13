@@ -338,3 +338,81 @@ Run Worker type-check:
 cd worker
 npx tsc --noEmit
 ```
+
+## Load Test + JSON Report
+
+A configurable load-test runner is included:
+
+- Script: `scripts/load_test.py`
+- Config template: `config/load_test.example.yml`
+- Report output: `reports/load-tests/<run-id>.json`
+
+Run:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/load_test.py --config config/load_test.example.yml
+```
+
+Validate config only (no traffic):
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/load_test.py --config config/load_test.example.yml --dry-run
+```
+
+### What you can configure
+
+- Load profile: `total_requests`, `requests_per_second`, `concurrency`, `ramp_up_seconds`
+- Run logging: `show_progress_logs`, `progress_interval_seconds` (live progress in CLI)
+- Request behavior: `request_timeout_seconds`, connection limits, HTTP/2 toggle, `trust_env_proxy`
+- Loopback safety: `disable_env_proxy_for_loopback` (for `localhost/127.0.0.1` auto-bypass env proxy)
+- Endpoint mode: `proxy_gemini`, `proxy_gemini_default`, `gemini_compatible`
+- Gemini routing: `model`, `api_version`, `method`
+- Prompt shaping: template list, `prompt_min_chars`, `prompt_max_chars`, random suffix length
+- Payload details: `generation_config`, `extra_body`, default-endpoint payload toggle
+- Success criteria: `assertions.success_status_codes`
+- Admin telemetry collection: rotation state, usage, incidents, worker connectivity, key checks
+- Report sampling: number of slow/error/success samples and max stored error body length
+- Failure forensics: `top_n_failure_signatures` for grouped root-cause signatures
+
+### Report contents
+
+The runner prints a human-readable CLI summary and writes a structured JSON report with:
+
+- Throughput and success/failure rates
+- Latency stats (`min/mean/p50/p90/p95/p99/max`)
+- HTTP status/error distributions
+- Proxy metadata analysis:
+  - worker slot usage
+  - key slot usage
+  - observed slot switches
+  - retry/rotation indicators (`attempts`, `key_rotated`)
+- Worker/key performance buckets with per-slot success/failure and latency
+- Token usage totals from `usageMetadata` when available
+- Admin before/after snapshots plus delta:
+  - rotation/runtime counters
+  - incident growth and incident kinds
+  - usage aggregate snapshot
+- Failure analysis:
+  - `by_location` (client / gateway / worker/upstream)
+  - `by_cause` (rate-limit, auth/access, upstream 5xx, connect error, validation, ...)
+  - HTTP/Gemini error status distributions
+  - request-level incident correlation via `request_id`
+
+`reports/load-tests/` is ignored in git to keep generated reports out of version control.
+
+### Live execution flow in CLI
+
+During execution you will see phase + progress logs, for example:
+
+```text
+[2026-05-13T00:01:10.123456+00:00] run_id=gemini-proxy-benchmark-... load test started
+[2026-05-13T00:01:10.123900+00:00] collecting admin snapshot: before
+[2026-05-13T00:01:10.500100+00:00] admin snapshot before collected
+[2026-05-13T00:01:10.500300+00:00] sending traffic total=300 rps=8.0 concurrency=24 endpoint=proxy_gemini
+[2026-05-13T00:01:12.501000+00:00] progress 16/300 (5.3%) success=14 failure=2 rps_now=7.99 rps_avg=7.91
+[2026-05-13T00:01:14.501000+00:00] progress 32/300 (10.7%) success=28 failure=4 rps_now=8.00 rps_avg=7.95
+...
+[2026-05-13T00:01:48.111000+00:00] traffic phase completed
+[2026-05-13T00:01:48.111200+00:00] collecting admin snapshot: after
+[2026-05-13T00:01:48.620000+00:00] admin snapshot after collected
+```
