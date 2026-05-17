@@ -299,6 +299,7 @@ def test_check_keys_in_cloudflare_mode_uses_worker_slots() -> None:
 
 def test_proxy_call_records_connect_error_incident() -> None:
     svc = GeminiProxyService(_settings("gemini_direct"))
+    svc.settings.proxy.max_retries_on_5xx = 1
 
     async def _raise_connect(*args, **kwargs):
         raise httpx.ConnectError("boom")
@@ -319,6 +320,42 @@ def test_proxy_call_records_connect_error_incident() -> None:
 
     assert exc.value.status_code == 502
     assert len(svc.incidents) >= 1
+
+    _run(svc.aclose())
+
+
+def test_proxy_call_retries_on_connect_error_and_succeeds() -> None:
+    svc = GeminiProxyService(_settings("gemini_direct"))
+    svc.settings.proxy.max_retries_on_5xx = 2
+    svc.settings.proxy.retry_backoff_sec = 0
+
+    calls = {"count": 0}
+
+    async def _flaky_post(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ConnectError("transient connect failure")
+        return httpx.Response(
+            200,
+            json={"candidates": []},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent"),
+        )
+
+    svc.client.post = _flaky_post  # type: ignore[method-assign]
+
+    resp = _run(
+        svc.proxy_call(
+            {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            path_model="gemini-2.5-flash",
+            path_api_version="v1beta",
+            path_method="generateContent",
+        )
+    )
+
+    assert resp.status_code == 200
+    assert calls["count"] == 2
+    assert any(i["kind"] == "retry_on_connect_error" for i in svc.incidents)
 
     _run(svc.aclose())
 

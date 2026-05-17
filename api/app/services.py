@@ -284,6 +284,7 @@ class GeminiProxyService:
         tried_in_round = 0
         attempts = 0
         retries_5xx_done = 0
+        retries_connect_done = 0
         request_started_at = time.monotonic()
         logger.info(
             "Gemini proxy call started",
@@ -391,6 +392,75 @@ class GeminiProxyService:
                         }
                     },
                 )
+                should_retry_connect = retries_connect_done < max_retries_on_5xx
+                if should_retry_connect:
+                    retries_connect_done += 1
+                    self._record_incident(
+                        kind="retry_on_connect_error",
+                        message=(
+                            f"retry_on_connect_error #{retries_connect_done}/{max_retries_on_5xx} "
+                            f"model={model} method={method}"
+                        ),
+                        context={
+                            "request_id": request_id,
+                            "mode": self.settings.proxy.mode,
+                            "worker_slot": active_worker_slot,
+                            "key_slot": active_key_slot,
+                            "attempt": attempts,
+                        },
+                    )
+                    logger.warning(
+                        "Gemini proxy retrying after upstream connect error",
+                        extra={
+                            "details": {
+                                "request_id": request_id,
+                                "attempt": attempts,
+                                "retry_number": retries_connect_done,
+                                "max_retries_on_5xx": max_retries_on_5xx,
+                                "mode": self.settings.proxy.mode,
+                                "model": model,
+                                "method": method,
+                                "worker_slot": active_worker_slot,
+                                "key_slot": active_key_slot,
+                            }
+                        },
+                    )
+
+                    pool_size = (
+                        len(self.worker_rr.values)
+                        if self.settings.proxy.mode == "cloudflare_worker"
+                        else len(self.gemini_key_rr.values)  # type: ignore[union-attr]
+                    )
+                    tried_in_round += 1
+                    if self.settings.proxy.mode == "cloudflare_worker":
+                        self.worker_rr.next()  # type: ignore[union-attr]
+                    else:
+                        self.gemini_key_rr.next()  # type: ignore[union-attr]
+
+                    if tried_in_round >= pool_size:
+                        rounds_done += 1
+                        tried_in_round = 0
+                        if rounds_done >= rounds_limit:
+                            logger.warning(
+                                "Gemini proxy exhausted one full retry round",
+                                extra={
+                                    "details": {
+                                        "request_id": request_id,
+                                        "rounds_done": rounds_done,
+                                        "rounds_limit": rounds_limit,
+                                        "pool_size": pool_size,
+                                        "cooloff_sec": cooloff_sec,
+                                    }
+                                },
+                            )
+                            if cooloff_sec > 0:
+                                await asyncio.sleep(cooloff_sec)
+                            rounds_done = 0
+
+                    if retry_backoff_sec > 0:
+                        await asyncio.sleep(retry_backoff_sec)
+                    continue
+
                 raise HTTPException(
                     status_code=502,
                     detail=f"Upstream connection error while calling worker/gemini: {exc}",
