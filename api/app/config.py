@@ -25,6 +25,7 @@ class AppSection(BaseModel):
 class ProxySection(BaseModel):
     mode: Literal["cloudflare_worker", "gemini_direct"] = "cloudflare_worker"
     trust_env_proxy: bool = True
+    force_ipv4: bool = False
     retry_on_429: bool = True
     retry_on_5xx: bool = True
     max_retries_per_key: int = 2
@@ -120,6 +121,7 @@ def _apply_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         "APP_OPENAPI_URL": ("app.openapi_url", str),
         "PROXY_MODE": ("proxy.mode", str),
         "PROXY_TRUST_ENV_PROXY": ("proxy.trust_env_proxy", _parse_bool),
+        "PROXY_FORCE_IPV4": ("proxy.force_ipv4", _parse_bool),
         "PROXY_RETRY_ON_429": ("proxy.retry_on_429", _parse_bool),
         "PROXY_RETRY_ON_5XX": ("proxy.retry_on_5xx", _parse_bool),
         "PROXY_MAX_RETRIES_PER_KEY": ("proxy.max_retries_per_key", int),
