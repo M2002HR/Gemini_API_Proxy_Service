@@ -61,10 +61,30 @@ class GeminiProxyService:
                 if val.lower().startswith("socks://"):
                     os.environ.pop(key, None)
         transport: httpx.AsyncHTTPTransport | None = None
-        if bool(getattr(settings.proxy, "force_ipv4", False)):
+        explicit_proxy = (
+            os.getenv("GEMINI_HTTPS_PROXY", "").strip()
+            or os.getenv("GEMINI_HTTP_PROXY", "").strip()
+            or os.getenv("gemini_https_proxy", "").strip()
+            or os.getenv("gemini_http_proxy", "").strip()
+        )
+        use_explicit_proxy = bool(explicit_proxy)
+
+        if bool(getattr(settings.proxy, "force_ipv4", False)) and not use_explicit_proxy:
             # Prefer IPv4 when IPv6 routing is flaky to avoid connect timeouts.
             transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        self.client = httpx.AsyncClient(timeout=timeout, trust_env=trust_env, transport=transport)
+
+        client_kwargs: Dict[str, Any] = {
+            "timeout": timeout,
+            "transport": transport,
+        }
+        if use_explicit_proxy:
+            # Prefer explicit per-service proxy for deterministic worker routing.
+            client_kwargs["proxy"] = explicit_proxy
+            client_kwargs["trust_env"] = False
+        else:
+            client_kwargs["trust_env"] = trust_env
+
+        self.client = httpx.AsyncClient(**client_kwargs)
         self.limiter = RateLimiter(settings.proxy.min_interval_sec)
 
         self.worker_rr: Optional[RoundRobinManager] = None
